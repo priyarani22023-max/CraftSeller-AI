@@ -1,0 +1,8 @@
+{
+  "name": "Remix CraftSeller AI",
+  "description": "Open-weight Gemma powered business assistant for handmade artisans and craft sellers: generate listings, social copy, and pricing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
