@@ -66,12 +66,49 @@ export const SAMPLE_SAVED_ITEMS: SavedItem[] = [
   }
 ];
 
+// API endpoint resolution:
+// 1. By default, uses same-origin relative path '/api' (handled by server.ts in AI Studio / dev, and redirected by netlify.toml on Netlify).
+// 2. Can be configured via VITE_API_BASE_URL if an external serverless base is provided.
+// 3. Automatically falls back to '/.netlify/functions/api' if '/api' returns 404 on Netlify.
+let currentApiBase = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL)
+  ? import.meta.env.VITE_API_BASE_URL.replace(/\/$/, '')
+  : '/api';
+
+export function getApiBaseUrl(): string {
+  return currentApiBase;
+}
+
+export function setApiBaseUrl(newBase: string): void {
+  currentApiBase = newBase.replace(/\/$/, '');
+}
+
+async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  const primaryUrl = `${currentApiBase}${path.startsWith('/') ? path : `/${path}`}`;
+  let res = await fetch(primaryUrl, options);
+
+  // If deployed on Netlify and the /api rewrite returned 404, dynamically fall back to direct function URL
+  if (res.status === 404 && currentApiBase === '/api') {
+    const netlifyUrl = `/.netlify/functions/api${path.startsWith('/') ? path : `/${path}`}`;
+    try {
+      const fallbackRes = await fetch(netlifyUrl, options);
+      if (fallbackRes.ok || fallbackRes.status !== 404) {
+        currentApiBase = '/.netlify/functions/api';
+        return fallbackRes;
+      }
+    } catch {
+      // return original 404 response
+    }
+  }
+
+  return res;
+}
+
 export async function checkGemmaHealth(): Promise<GemmaHealthStatus> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 12000);
 
   try {
-    const res = await fetch('/api/ai/health', {
+    const res = await apiFetch('/ai/health', {
       signal: controller.signal,
       headers: {
         'Cache-Control': 'no-cache',
@@ -113,7 +150,7 @@ export async function generateProductListingApi(input: ProductListingInput): Pro
   data: ProductListingOutput;
   modelUsed: string;
 }> {
-  const res = await fetch('/api/ai/generate-product', {
+  const res = await apiFetch('/ai/generate-product', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -134,7 +171,7 @@ export async function generateSocialContentApi(input: SocialMediaInput): Promise
   data: SocialMediaOutput;
   modelUsed: string;
 }> {
-  const res = await fetch('/api/ai/generate-social', {
+  const res = await apiFetch('/ai/generate-social', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -156,7 +193,7 @@ export async function explainPricingApi(input: PricingInput): Promise<{
   modelUsed: string;
 }> {
   const labourCostTotal = input.labourHours * input.hourlyRate;
-  const res = await fetch('/api/ai/explain-pricing', {
+  const res = await apiFetch('/ai/explain-pricing', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -186,7 +223,7 @@ export async function explainPricingApi(input: PricingInput): Promise<{
 // Local Storage & Server Synchronized Saved Content
 export async function fetchSavedItems(): Promise<{ items: SavedItem[]; source: 'backend' | 'local' }> {
   try {
-    const res = await fetch('/api/saved');
+    const res = await apiFetch('/saved');
     if (res.ok) {
       const json = await res.json();
       if (Array.isArray(json.items) && json.items.length > 0) {
@@ -218,7 +255,7 @@ export async function fetchSavedItems(): Promise<{ items: SavedItem[]; source: '
 export async function saveItem(item: Omit<SavedItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<SavedItem> {
   // Try backend first
   try {
-    const res = await fetch('/api/saved', {
+    const res = await apiFetch('/saved', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(item),
@@ -253,7 +290,7 @@ export async function saveItem(item: Omit<SavedItem, 'id' | 'createdAt' | 'updat
 
 export async function deleteSavedItem(id: string): Promise<void> {
   try {
-    await fetch(`/api/saved/${id}`, { method: 'DELETE' });
+    await apiFetch(`/saved/${id}`, { method: 'DELETE' });
   } catch (err) {
     console.warn('Backend delete failed, deleting from local storage:', err);
   }
@@ -265,7 +302,7 @@ export async function deleteSavedItem(id: string): Promise<void> {
 
 export async function updateSavedItem(id: string, updates: Partial<SavedItem>): Promise<void> {
   try {
-    await fetch(`/api/saved/${id}`, {
+    await apiFetch(`/saved/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates),

@@ -179,8 +179,73 @@ npm start
 
 ---
 
+## 🌐 Netlify Deployment Guide
+
+CraftSeller AI is fully configured for deployment on Netlify using Vite for the static frontend and Netlify Serverless Functions for the Gemma AI backend.
+
+### Why Netlify Returned 404 Before
+Netlify deploys client-side SPAs from the `dist/` build directory. Standard Express servers (`server.ts`) do not run automatically on Netlify. Without Netlify Serverless Functions and URL rewrite rules, browser requests to `/api/ai/health` and generation routes hit the static file server and return **HTTP 404**.
+
+CraftSeller AI includes serverless functions in `netlify/functions/api.ts` and rewrite configuration in `netlify.toml` to transparently route all `/api/*` traffic to serverless execution.
+
+### 1. Netlify Build Configuration
+These settings are pre-configured in `netlify.toml`. When linking your Git repository in Netlify, confirm these build settings:
+
+| Setting | Value |
+|---|---|
+| **Build command** | `npm run build` |
+| **Publish directory** | `dist` |
+| **Functions directory** | `netlify/functions` |
+| **Node Version** | `20` (or Node 20+) |
+
+### 2. Required Environment Variables
+Configure these in the Netlify Dashboard under **Site configuration > Environment variables**:
+
+| Variable Name | Required | Description |
+|---|---|---|
+| `GEMINI_API_KEY` | **Yes** | Your Google AI Studio API key used by server-side Gemma inference. |
+| `GEMMA_MODEL` | No | Gemma open-weight model ID (defaults to `gemma-4-26b-a4b-it`). |
+
+> **Security Note:** `GEMINI_API_KEY` is read strictly server-side by the Netlify Function. It is never exposed in browser bundles, DOM attributes, or client-side network calls.
+
+### 3. Verification Endpoints
+Once your Netlify deployment finishes, test the live Gemma inference connection:
+
+1. **In the Web Browser:**
+   - Open `https://<your-site-name>.netlify.app`
+   - The dashboard status indicator will show **Verifying Connection...** followed by **Live & Connected** with real measured latency.
+   - Click the **Retry** button on the Gemma status card to re-verify live round-trip connectivity at any time.
+
+2. **Via Terminal / cURL:**
+   ```bash
+   # Test redirected endpoint
+   curl -s https://<your-site-name>.netlify.app/api/ai/health
+
+   # Test direct Netlify function endpoint
+   curl -s https://<your-site-name>.netlify.app/.netlify/functions/health
+   ```
+
+   Expected successful response:
+   ```json
+   {
+     "connected": true,
+     "model": "gemma-4-26b-a4b-it",
+     "availableGemmaModels": ["gemma-4-26b-a4b-it", "gemma-4-31b-it"],
+     "latencyMs": 2836,
+     "message": "Gemma model gemma-4-26b-a4b-it responded in 2836ms (READY)",
+     "testedAt": "2026-10-16T12:10:30.256Z"
+   }
+   ```
+
+3. **In the CraftSeller AI UI:**
+   - Open the **Product Writer**, enter sample craft details, and click **Generate Listing**.
+   - Open the **Pricing Helper**, enter material and labor costs, and click **Calculate Fair Price**.
+
+---
+
 ## ⚖️ License & Acknowledgements
 
 - Built for **Hacktoberfest Open-Source AI Challenge Week 2: Side Hustle**.
 - Powered by Google's open-weight **Gemma** models.
 - Licensed under the Apache-2.0 License.
+

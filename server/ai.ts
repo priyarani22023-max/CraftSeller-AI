@@ -10,20 +10,27 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Configurable model name with default to gemma-4-26b-a4b-it
+// Configurable model helper
+export function getConfiguredModel(): string {
+  return process.env.GEMMA_MODEL || 'gemma-4-26b-a4b-it';
+}
+
 export const CONFIGURED_GEMMA_MODEL = process.env.GEMMA_MODEL || 'gemma-4-26b-a4b-it';
 
-const apiKey = process.env.GEMINI_API_KEY;
+export function getApiKey(): string | undefined {
+  return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+}
 
 let aiClient: GoogleGenAI | null = null;
 
 export function getAiClient(): GoogleGenAI {
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY environment variable is not configured. Please provide an API key to access the Gemma model.');
+  const key = getApiKey();
+  if (!key) {
+    throw new Error('GEMINI_API_KEY environment variable is not configured. Please provide GEMINI_API_KEY in your environment settings.');
   }
   if (!aiClient) {
     aiClient = new GoogleGenAI({
-      apiKey,
+      apiKey: key,
       httpOptions: {
         headers: {
           'User-Agent': 'aistudio-build',
@@ -97,27 +104,30 @@ async function discoverAvailableGemmaModels(client: GoogleGenAI): Promise<string
 export async function testGemmaHealth(): Promise<ModelHealthResult> {
   const testTimestamp = new Date().toISOString();
 
+  const key = getApiKey();
+  const currentModel = getConfiguredModel();
+
   // 1. Verify API Key is available on server
-  if (!apiKey) {
+  if (!key) {
     return {
       connected: false,
-      model: CONFIGURED_GEMMA_MODEL,
+      model: currentModel,
       availableGemmaModels: [],
       latencyMs: 0,
-      message: 'GEMINI_API_KEY is not configured in the server environment.',
-      error: 'Missing server API key',
+      message: 'GEMINI_API_KEY is not configured in the server environment. On Netlify, add GEMINI_API_KEY in Site configuration > Environment variables.',
+      error: 'Missing server API key (GEMINI_API_KEY)',
       testedAt: testTimestamp,
     };
   }
 
   // 2. Verify that configured model is strictly an open-weight Gemma model
-  if (!isGemmaModel(CONFIGURED_GEMMA_MODEL)) {
+  if (!isGemmaModel(currentModel)) {
     return {
       connected: false,
-      model: CONFIGURED_GEMMA_MODEL,
+      model: currentModel,
       availableGemmaModels: [],
       latencyMs: 0,
-      message: `Configured model "${CONFIGURED_GEMMA_MODEL}" is not an open-weight Gemma model. CraftSeller AI requires a Gemma model and never silently switches to Gemini.`,
+      message: `Configured model "${currentModel}" is not an open-weight Gemma model. CraftSeller AI requires a Gemma model and never silently switches to Gemini.`,
       error: 'Invalid model configuration: non-Gemma model requested',
       testedAt: testTimestamp,
     };
@@ -128,24 +138,46 @@ export async function testGemmaHealth(): Promise<ModelHealthResult> {
   // 3. Perform a genuine, lightweight server-side Gemma inference request
   const pingStart = Date.now();
   try {
-    const testResponse = await withTimeout(
-      client.models.generateContent({
-        model: CONFIGURED_GEMMA_MODEL,
-        contents: 'Ping test. Reply with exactly the single word "READY".',
-      }),
-      10000,
-      `Gemma inference request to ${CONFIGURED_GEMMA_MODEL}`
-    );
+    let testResponse: any = null;
+    let lastErr: any = null;
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        testResponse = await withTimeout(
+          client.models.generateContent({
+            model: currentModel,
+            contents: 'Ping test. Reply with exactly the single word "READY".',
+          }),
+          10000,
+          `Gemma inference request to ${currentModel}`
+        );
+        if (testResponse?.text?.trim()) {
+          break;
+        }
+      } catch (err: any) {
+        lastErr = err;
+        const msg = err?.message || String(err);
+        if (attempt < 2 && (msg.includes('INTERNAL') || msg.includes('503') || msg.includes('overloaded'))) {
+          await new Promise((r) => setTimeout(r, 600));
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    if (!testResponse && lastErr) {
+      throw lastErr;
+    }
 
     const latencyMs = Date.now() - pingStart;
-    const replyText = testResponse.text?.trim() || '';
+    const replyText = testResponse?.text?.trim() || '';
 
     // Only declare Connected if real Gemma request returned valid output
     if (!replyText) {
       return {
         connected: false,
-        model: CONFIGURED_GEMMA_MODEL,
-        availableGemmaModels: [CONFIGURED_GEMMA_MODEL],
+        model: currentModel,
+        availableGemmaModels: [currentModel],
         latencyMs,
         message: 'Gemma model responded with an empty output.',
         error: 'Empty model response',
@@ -158,10 +190,10 @@ export async function testGemmaHealth(): Promise<ModelHealthResult> {
 
     return {
       connected: true,
-      model: CONFIGURED_GEMMA_MODEL,
-      availableGemmaModels: availableGemmaModels.length > 0 ? availableGemmaModels : [CONFIGURED_GEMMA_MODEL],
+      model: currentModel,
+      availableGemmaModels: availableGemmaModels.length > 0 ? availableGemmaModels : [currentModel],
       latencyMs,
-      message: `Gemma model ${CONFIGURED_GEMMA_MODEL} responded in ${latencyMs}ms (${replyText.slice(0, 30)})`,
+      message: `Gemma model ${currentModel} responded in ${latencyMs}ms (${replyText.slice(0, 30)})`,
       testedAt: testTimestamp,
     };
   } catch (err: any) {
@@ -171,16 +203,18 @@ export async function testGemmaHealth(): Promise<ModelHealthResult> {
 
     let specificFailure = sanitized;
     if (rawError.includes('404') || rawError.includes('not found')) {
-      specificFailure = `Model "${CONFIGURED_GEMMA_MODEL}" is not supported or not found on the current inference provider.`;
+      specificFailure = `Model "${currentModel}" is not supported or not found on the current inference provider.`;
     } else if (rawError.includes('403') || rawError.includes('API_KEY_INVALID')) {
       specificFailure = 'Authentication failed: Invalid or unauthorized GEMINI_API_KEY.';
+    } else if (rawError.includes('429') || rawError.includes('RESOURCE_EXHAUSTED')) {
+      specificFailure = 'Rate limit reached on Google Gemma endpoint (HTTP 429). Please wait a moment and click Retry.';
     } else if (rawError.includes('timed out')) {
       specificFailure = `Inference ping timed out (${latencyMs}ms).`;
     }
 
     return {
       connected: false,
-      model: CONFIGURED_GEMMA_MODEL,
+      model: currentModel,
       availableGemmaModels: [],
       latencyMs,
       message: `Connection Failed: ${specificFailure}`,
@@ -251,7 +285,7 @@ You MUST respond with a valid JSON object only (no markdown code blocks, no othe
 }`;
 
   const response = await client.models.generateContent({
-    model: CONFIGURED_GEMMA_MODEL,
+    model: getConfiguredModel(),
     contents: prompt,
   });
 
@@ -305,7 +339,7 @@ You MUST respond with a valid JSON object only (no markdown code blocks, no othe
 }`;
 
   const response = await client.models.generateContent({
-    model: CONFIGURED_GEMMA_MODEL,
+    model: getConfiguredModel(),
     contents: prompt,
   });
 
@@ -360,7 +394,7 @@ You MUST respond with a valid JSON object only (no markdown code blocks, no othe
 }`;
 
   const response = await client.models.generateContent({
-    model: CONFIGURED_GEMMA_MODEL,
+    model: getConfiguredModel(),
     contents: prompt,
   });
 

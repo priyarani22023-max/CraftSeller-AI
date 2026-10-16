@@ -1,0 +1,27 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# Specific redirect for health check endpoint
+[[redirects]]
+  from = "/api/ai/health"
+  to = "/.netlify/functions/api/ai/health"
+  status = 200
+  force = true
+
+# Route all /api/* requests to the Netlify Serverless API Function
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+  force = true
+
+# Single Page Application fallback: route all other paths to index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
